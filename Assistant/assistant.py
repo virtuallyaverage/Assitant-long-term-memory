@@ -1,6 +1,6 @@
 import openai
 import os
-from memory import MilvusAssistant
+from Assistant.memory import MilvusAssistant
 from typing import List
 import pyaudio
 import struct
@@ -16,15 +16,22 @@ openai.api_key = os.environ["OPENAI_API_KEY"]
 
 
 class ChatGPTAssistant(MilvusAssistant):
-    def __init__(self, milvus_host: str, milvus_port: str, model_name: str, chat_gpt_model: str = "gpt-3.5-turbo"):
-        super().__init__(milvus_host, milvus_port, model_name)
+    def __init__(self, milvus_host: str, milvus_port: str, tokenizer_model_name: str, keys:dict, chat_gpt_model: str = "gpt-3.5-turbo"):
+        super().__init__(milvus_host, milvus_port, tokenizer_model_name)
         self.chat_gpt_model = chat_gpt_model
         self.vad = webrtcvad.Vad(2)  # Set aggressiveness level to 2 (default)
         self.max_silence = 12000 #ticks
         self.cutoff_after_speak = 500
+        self.whisper_model = 'small.en'
+        self.porcupine_key = keys['porcupine']
+        self.openai_key = keys['openai_api']
+        
+        
+        
+        self.whisper = whisper.load_model(self.whisper_model)
 
     def generate_response(self, conversation: List[str], max_tokens: int = 150) -> str:
-        chat_history = [{'role': 'system', 'content': "You are a helpful assistant."}]  # Initialize the system message
+        chat_history = [{'role': 'Helpful AI voice assistant system', 'content': ()}]  # Initialize the system message
         for i, message in enumerate(conversation):
             role = "user" if i % 2 == 0 else "assistant"
             chat_history.append({"role": role, "content": message})
@@ -33,6 +40,8 @@ class ChatGPTAssistant(MilvusAssistant):
             "messages": chat_history,
             "max_tokens": max_tokens
         }
+        
+        print(f"sending prompt: {prompt}")
 
         response = openai.Completion.create(
             engine=self.chat_gpt_model,
@@ -52,7 +61,7 @@ class ChatGPTAssistant(MilvusAssistant):
             if response:
                 return response
 
-        return "Sorry, I couldn't find any relevant information."
+        return ""
     
     def wait_for_wake_word(self, wake_words: List[str]):
         porcupine = None
@@ -60,8 +69,8 @@ class ChatGPTAssistant(MilvusAssistant):
         audio_stream = None
 
         try:
-            #TODO: load porcupine key
-            porcupine = pvporcupine.create(keywords=wake_words)
+            print(f"Listening for wake word {wake_words}")
+            porcupine = pvporcupine.create(self.porcupine_key, keywords=wake_words)
 
             pa = pyaudio.PyAudio()
 
@@ -90,21 +99,21 @@ class ChatGPTAssistant(MilvusAssistant):
                 porcupine.delete()
 
     def record_and_translate(self) -> str:
-        recognizer = sr.Recognizer()
         with sr.Microphone() as source:
             print("recording...")
             # Wait for the user to start speaking
             while True:
-                frame = source.stream.read(320, exception_on_overflow=False)
+                frame = source.stream.read(320)
                 if self.vad.is_speech(frame, 16000):
                     break
 
             # Record the audio until there is a pause in speaking
             silence_counter = 0
             has_spoken = False
+            audio = []
             while True:
                 print(f"silence: {silence_counter}, has spoken: {has_spoken}")
-                frame = source.stream.read(320, exception_on_overflow=False)
+                frame = source.stream.read(320)
                 if not self.vad.is_speech(frame, 16000) and has_spoken:
                     silence_counter += 1
                     if silence_counter >= self.cutoff_after_speak:
@@ -118,10 +127,10 @@ class ChatGPTAssistant(MilvusAssistant):
                 audio += sr.AudioData(frame, source.SAMPLE_RATE, source.SAMPLE_WIDTH)
                 
             try:
-                text = self.transcribe_audio_whisper(audio)
+                text = self.whisper.transcribe(audio)
                 return text
             except Exception as e:
-                print(f"Error: {e}")
+                print(f"Error converting to text: {e}")
                 return ""
             
 
@@ -139,7 +148,7 @@ class ChatGPTAssistant(MilvusAssistant):
         with open("temp_audio_16k.wav", "rb") as f:
             audio_bytes = f.read()
 
-        transcript = whisper.transcribe(temp_audio.wav)
+        transcript = whisper.transcribe(audio_bytes)
         return transcript
 
 
@@ -149,6 +158,7 @@ class ChatGPTAssistant(MilvusAssistant):
         Args:
             wake_words (List[str]): which wakewords to use for picovoice
         """
+        
         while True:
             self.wait_for_wake_word(wake_words)
             query = self.record_and_translate()
