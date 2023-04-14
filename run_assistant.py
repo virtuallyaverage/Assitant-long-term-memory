@@ -16,4 +16,5 @@ keys = {
 print("###   starting service ###")
 assistant = assistant.ChatGPTAssistant(milvus_host, milvus_port, tokenizer_model_name, keys)
 print("### running loop ###")
+assistant._create_collection()
 assistant.run(wake_words=["computer", "jarvis"])

@@ -9,7 +9,9 @@ import speech_recognition as sr
 import webrtcvad
 import whisper
 import ffmpeg
-from time import process_time
+from time import process_time, sleep
+from numpy import frombuffer, int16
+from torch import tensor
 
 openai.api_key = os.environ["OPENAI_API_KEY"]
 
@@ -20,11 +22,12 @@ class ChatGPTAssistant(MilvusAssistant):
         super().__init__(milvus_host, milvus_port, tokenizer_model_name)
         self.chat_gpt_model = chat_gpt_model
         self.vad = webrtcvad.Vad(2)  # Set aggressiveness level to 2 (default)
-        self.max_silence = 12000 #ticks
-        self.cutoff_after_speak = 500
+        self.max_silence = 500 #ticks
+        self.cutoff_after_speak = 60
         self.whisper_model = 'small.en'
         self.porcupine_key = keys['porcupine']
         self.openai_key = keys['openai_api']
+        self.skip_list = ["", ".", "exit", "stop", "thanks", "thank you"]
         
         
         
@@ -100,38 +103,46 @@ class ChatGPTAssistant(MilvusAssistant):
 
     def record_and_translate(self) -> str:
         with sr.Microphone() as source:
+            sleep(.5) #wait for it to stop recording wakeword
             print("recording...")
-            # Wait for the user to start speaking
-            while True:
-                frame = source.stream.read(320)
-                if self.vad.is_speech(frame, 16000):
-                    break
 
-            # Record the audio until there is a pause in speaking
             silence_counter = 0
             has_spoken = False
-            audio = []
+            audio_bytes = bytearray()  # Store audio data as bytes
+            speaking = False
             while True:
-                print(f"silence: {silence_counter}, has spoken: {has_spoken}")
+                print(f"silence: {silence_counter}, has spoken: {has_spoken}, speaking: {speaking}")
+                
                 frame = source.stream.read(320)
-                if not self.vad.is_speech(frame, 16000) and has_spoken:
+                
+                if not speaking and has_spoken:
                     silence_counter += 1
                     if silence_counter >= self.cutoff_after_speak:
                         break
-                if not self.vad.is_speech(frame, 16000) and not has_spoken:
+                    
+                elif not speaking and not has_spoken:
                     silence_counter += 1
                     if silence_counter >= self.max_silence:
                         break
-                else:
+                    
+                elif speaking:
                     silence_counter = 0
-                audio += sr.AudioData(frame, source.SAMPLE_RATE, source.SAMPLE_WIDTH)
-                
+                    has_spoken = True
+                audio_bytes.extend(frame)  # Concatenate audio data as bytes
+                sleep(.01) #keep it from taking off
+                speaking = self.vad.is_speech(frame, 16000)
+
+            # Convert the byte array to numpy array for whisper
+            audio_np = frombuffer(audio_bytes, dtype=int16)
+            audio_np = audio_np.astype(float)
+            audio_tensor = tensor(audio_np).float()
+            
             try:
-                text = self.whisper.transcribe(audio)
-                return text
+                text = self.whisper.transcribe(audio_tensor)
+                return text["text"]
             except Exception as e:
                 print(f"Error converting to text: {e}")
-                return ""
+                exit()
             
 
     def transcribe_audio_whisper(self, audio_data):
@@ -162,7 +173,11 @@ class ChatGPTAssistant(MilvusAssistant):
         while True:
             self.wait_for_wake_word(wake_words)
             query = self.record_and_translate()
-            if query:
+            print(f"User said: {query}")
+            if query.lower() not in self.skip_list:
                 response = self.get_relevant_response(query)
                 print(f"Assistant: {response}")
                 # You can use TTS to speak the response here
+                
+            else:
+                print("skipping")
