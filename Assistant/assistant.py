@@ -1,6 +1,6 @@
 import openai
 import os
-from Assistant.memory import MilvusAssistant
+from Assistant.memory import ConversationStorage
 from typing import List
 import pyaudio
 import struct
@@ -11,60 +11,74 @@ import whisper
 import ffmpeg
 from time import process_time, sleep
 from numpy import frombuffer, int16
-from torch import tensor
-
-openai.api_key = os.environ["OPENAI_API_KEY"]
+from torch import tensor, cuda
 
 
 
-class ChatGPTAssistant(MilvusAssistant):
-    def __init__(self, milvus_host: str, milvus_port: str, tokenizer_model_name: str, keys:dict, chat_gpt_model: str = "gpt-3.5-turbo"):
-        super().__init__(milvus_host, milvus_port, tokenizer_model_name)
+class ChatGPTAssistant(ConversationStorage):
+    def __init__(self, tokenizer_model_name: str, keys:dict, chat_gpt_model: str = "gpt-3.5-turbo"):
+        super().__init__(tokenizer_model_name)
         self.chat_gpt_model = chat_gpt_model
         self.vad = webrtcvad.Vad(2)  # Set aggressiveness level to 2 (default)
-        self.max_silence = 500 #ticks
+        self.max_silence = 120 #ticks
         self.cutoff_after_speak = 60
         self.whisper_model = 'small.en'
         self.porcupine_key = keys['porcupine']
-        self.openai_key = keys['openai_api']
+        print("set openai key to:", keys["openai_api"])
+        openai.api_key = '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'
+        print("key is :", openai.api_key)
         self.skip_list = ["", ".", "exit", "stop", "thanks", "thank you"]
+        self.whisper_device = 'cuda:0' if cuda.is_available() else 'cpu'
         
         
-        
-        self.whisper = whisper.load_model(self.whisper_model)
+        print(f"Seech to text running on {self.whisper_device}")
+        self.whisper = whisper.load_model("medium")
+        self.whisper.to(self.whisper_device)
 
-    def generate_response(self, conversation: List[str], max_tokens: int = 150) -> str:
-        chat_history = [{'role': 'Helpful AI voice assistant system', 'content': ()}]  # Initialize the system message
+    def generate_response(self, conversation: List[str], max_tokens: int = 1000) -> str:
+        def format_prompt(messages):
+            formatted_messages = []
+            for message in messages:
+                if message["role"] == "system":
+                    formatted_messages.append(f'System: {message["content"]}')
+                elif message["role"] == "user":
+                    formatted_messages.append(f'User: {message["content"]}')
+                else:
+                    formatted_messages.append(f'Assistant: {message["content"]}')
+            return "\n".join(formatted_messages)
+
+        chat_history = [{"role": "system", "content": "You are a helpful assistant. listen to the system to get context from past conversations."}]  # Initialize the system message
         for i, message in enumerate(conversation):
             role = "user" if i % 2 == 0 else "assistant"
             chat_history.append({"role": role, "content": message})
 
+        relevant_conversations = self.search_conversations(":".join(conversation))  
+        chat_history.append({"role":"system", "content":"Relevent conversations from the past:"})
+        for old_conversation in relevant_conversations:
+            chat_history.append(old_conversation)
+        
+        print(f"sending off: {chat_history}")
         prompt = {
             "messages": chat_history,
             "max_tokens": max_tokens
         }
         
+        
         print(f"sending prompt: {prompt}")
 
-        response = openai.Completion.create(
+        formatted_prompt = format_prompt(prompt["messages"])
+        
+        response = openai.ChatCompletion.create(
             engine=self.chat_gpt_model,
             prompt=prompt,
             n=1,
+            max_tokens=max_tokens,
             stop=None,
             temperature=0.8,
         )
 
+
         return response.choices[0].text.strip()
-
-    def get_relevant_response(self, query: str, top_k: int = 5) -> str:
-        relevant_ids = self.get_relevant_info(query, top_k)
-        relevant_conversations = [self.collection.load(id) for id in relevant_ids]
-        for conversation in relevant_conversations:
-            response = self.generate_response(conversation)
-            if response:
-                return response
-
-        return ""
     
     def wait_for_wake_word(self, wake_words: List[str]):
         porcupine = None
@@ -163,7 +177,7 @@ class ChatGPTAssistant(MilvusAssistant):
         return transcript
 
 
-    def run(self, wake_words: List[str]):
+    def run(self, wake_words: List[str]=["computer", "jarvis"]):
         """_summary_ Continuously waits for a wake word, records and translates the user's query, and generates a response using the existing get_relevant_response method.
 
         Args:
@@ -174,8 +188,9 @@ class ChatGPTAssistant(MilvusAssistant):
             self.wait_for_wake_word(wake_words)
             query = self.record_and_translate()
             print(f"User said: {query}")
+            
             if query.lower() not in self.skip_list:
-                response = self.get_relevant_response(query)
+                response = self.generate_response([query])
                 print(f"Assistant: {response}")
                 # You can use TTS to speak the response here
                 

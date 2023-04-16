@@ -1,73 +1,64 @@
-from typing import List
-import sqlite3
 import numpy as np
-from pymilvus import Milvus, IndexType, MetricType, Status
+from sentence_transformers import SentenceTransformer
+from milvus import Milvus, IndexType, MetricType, Status
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship, sessionmaker
+from sklearn.metrics.pairwise import cosine_similarity
 
-class ConversationStorage:
-    def __init__(self, model):
-        self.model = model
-        self.embedding_field_name = "numpy_embeddings"
-        
-        # Initialize SQLite
-        self.conn = sqlite3.connect("data/conversation_lookup.db")
-        self.cursor = self.conn.cursor()
-        self.cursor.execute("""
-        CREATE TABLE IF NOT EXISTS conversation_lookup (conversation_id INTEGER PRIMARY KEY, conversation_history TEXT)
-        """)
-        
-        # Initialize Milvus
-        self.collection = "conversation_collection"
-        self.milvus = Milvus(host="localhost", port="19530")
-        status, ok = self.milvus.has_collection(self.collection)
-        if not ok:
-            param = {
-                'collection_name': self.collection,
-                'dimension': model.get_dimension(),
-                'index_file_size': 1024,
-                'metric_type': MetricType.IP
-            }
-            status = self.milvus.create_collection(param)
+Base = declarative_base()
 
-    def store_conversation(self, conversation: List[str]):
-        print("storing the conversation")
-        embedded_conversation = self.model.encode(conversation)
-        numpy_embeddings = np.array(embedded_conversation)
-        
-        status, ids = self.milvus.insert(collection_name=self.collection, records=numpy_embeddings)
-        if not status.OK():
-            raise Exception(f"Failed to insert embeddings into Milvus: {status}")
+class Conversation(Base):
+    __tablename__ = 'conversations'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String, ForeignKey('users.id'))
+    conversation_data = Column(String)
 
-        conversation_id = ids[0]
-        conversation_history = " ".join(conversation)
-        
-        self.cursor.execute("""
-        INSERT INTO conversation_lookup (conversation_id, conversation_history) VALUES (?, ?)
-        """, (conversation_id, conversation_history))
-        self.conn.commit()
-        return conversation_id
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(String, primary_key=True)
+    conversations = relationship('Conversation', backref='user')
 
-    def search_conversations(self, query: str, top_k: int = 5):
-        embedded_query = self.model.encode([query])
-        numpy_query = np.array(embedded_query)
+class LongTermMemory:
+    def __init__(self):
+        self.setup_memory_storage()
+        self.vectorizer = SentenceTransformer('bert-base-nli-mean-tokens')
+        self.milvus_client = Milvus(host='localhost', port='19530')
 
-        search_params = {"nprobe": 16}
-        status, results = self.milvus.search(
-            collection_name=self.collection,
-            query_records=numpy_query,
-            top_k=top_k,
-            params=search_params
-        )
-        if not status.OK():
-            raise Exception(f"Failed to search embeddings in Milvus: {status}")
+    def setup_memory_storage(self):
+        self.engine = create_engine('sqlite:///memory.db')
+        Base.metadata.create_all(self.engine)
+        self.Session = sessionmaker(bind=self.engine)
+        self.session = self.Session()
 
-        similar_conversation_ids = [result.id for result in results[0]]
-        similar_conversations = []
+    def retrieve_past_conversations(self, user_identifier):
+        try:
+            past_conversations = self.session.query(Conversation).filter_by(user_id=user_identifier).all()
+            return [conv.conversation_data for conv in past_conversations]
+        except Exception as e:
+            print("Error:", e)
+            return []
 
-        for conversation_id in similar_conversation_ids:
-            self.cursor.execute("""
-            SELECT conversation_history FROM conversation_lookup WHERE conversation_id = ?
-            """, (conversation_id,))
-            conversation_history = self.cursor.fetchone()[0]
-            similar_conversations.append(conversation_history)
+    def store_conversation(self, user_identifier, conversation_data):
+        try:
+            new_conversation = Conversation(user_id=user_identifier, conversation_data=conversation_data)
+            self.session.add(new_conversation)
+            self.session.commit()
+        except Exception as e:
+            print("Error:", e)
 
-        return similar_conversations
+    def find_similar_conversations(self, user_identifier, input_text, top_n=5):
+        past_conversations = self.retrieve_past_conversations(user_identifier)
+        if not past_conversations:
+            return []
+
+        input_vector = self.vectorizer.encode([input_text])[0]
+        past_vectors = self.vectorizer.encode(past_conversations)
+        similarities = cosine_similarity([input_vector], past_vectors)[0]
+        top_indices = np.argsort(similarities)[-top_n:][::-1]
+
+        return [past_conversations[i] for i in top_indices]
+
+    def close(self):
+        self.session.close()
+

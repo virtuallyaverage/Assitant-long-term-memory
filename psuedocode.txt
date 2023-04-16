@@ -1,0 +1,105 @@
+class LongTermMemory:
+  - Initialize:
+    - Set up memory storage
+
+  - RetrievePastConversations:
+    - Pass In: userIdentifier
+    - Try:
+        - Retrieve conversations related to userIdentifier
+        - Pass Out: pastConversations
+      - Catch exception:
+        - Log error
+        - Return empty list
+
+  - RetrievePastInformation:
+    - Pass In: userIdentifier
+    - Try:
+        - Retrieve information related to userIdentifier
+        - Pass Out: pastInformation
+      - Catch exception:
+        - Log error
+        - Return empty list
+
+  - StoreConversation:
+    - Pass In: userIdentifier, conversationData
+    - Try:
+        - Store conversationData in memory storage
+      - Catch exception:
+        - Log error
+
+class SpeechProcessing:
+  - Initialize:
+    - Load ASR model
+    - Load TTS model
+
+  - ConvertSpeechToText:
+    - Pass In: audioInput
+    - Try:
+        - Process audioInput using ASR model
+        - Pass Out: textOutput
+      - Catch exception:
+        - Log error
+        - Return empty string
+
+  - ConvertTextToSpeech:
+    - Pass In: textInput
+    - Try:
+        - Process textInput using TTS model
+        - Pass Out: audioOutput
+      - Catch exception:
+        - Log error
+        - Return empty audioOutput
+
+
+class VoiceAssistant:
+  - Initialize:
+    - Set wakeword
+    - Set conversationState (inactive)
+    - Instantiate LongTermMemory class
+    - Instantiate SpeechProcessing class
+
+  - Listen:
+    - Wait for wakeword
+    - Record audioInput
+    - Try:
+        - Call: SpeechProcessing.ConvertSpeechToText
+        - Pass Out: textOutput
+      - Catch exception:
+        - Log error
+        - Return empty string
+
+  - Process:
+    - Pass In: textInput
+    - Parse textInput into humanUtterances
+    - Try:
+        - Call: LongTermMemory.RetrievePastConversations
+        - Call: LongTermMemory.RetrievePastInformation
+      - Catch exception:
+        - Log error
+        - Return default response
+    - Provide context to LLM using retrievedData
+    - Generate response based on context
+    - Pass Out: responseText
+
+  - Respond:
+    - Pass In: responseText
+    - Try:
+        - Call: SpeechProcessing.ConvertTextToSpeech
+        - Play audioOutput
+        - Call: LongTermMemory.StoreConversation
+      - Catch exception:
+        - Log error
+
+  - EndConversation:
+    - Set conversationState (inactive)
+
+voiceAssistant = VoiceAssistant()
+
+WHILE True DO
+  voiceAssistant.Listen()
+  userText = voiceAssistant.Process()
+  IF userText is not empty THEN
+    voiceAssistant.Respond(userText)
+  END IF
+  voiceAssistant.EndConversation()
+END WHILE
