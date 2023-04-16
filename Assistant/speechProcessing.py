@@ -46,15 +46,15 @@ import time
 
 if __name__ == "__main__":
     access_key = "YOUR_ACCESS_KEY"
-    keyword_path = "path/to/keyword.ppn"
-    context_path = "path/to/context.rhn"
+    keyword_path = "data\jarvis_en_windows_v2_2_0.ppn"
+    context_path = "data\something-new_en_windows_v2_2_0.rhn"
+    audio_input = "data\\test_sound.wav"
     porcupine_sensitivity = 0.5
     rhino_sensitivity = 0.5
 
     speech_processing = SpeechProcessing(access_key, keyword_path, context_path, porcupine_sensitivity, rhino_sensitivity)
 
     # Test speech-to-text using Leopard
-    audio_input = "path/to/audio.wav"
     text_output = speech_processing.convert_speech_to_text(audio_input)
     print(f"Speech-to-text output: {text_output}")
 
